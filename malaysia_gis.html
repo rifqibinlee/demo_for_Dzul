@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Malaysia Hospital GIS — Complaint Mapper</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <!-- Turf.js for GIS ops -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg:        #080d14;
+      --panel-bg:  #0d1520;
+      --border:    #1a2e42;
+      --accent:    #00e5ff;
+      --accent2:   #ff6b35;
+      --warn:      #ffcc00;
+      --ok:        #39ff14;
+      --text:      #c8dde8;
+      --muted:     #4a6070;
+      --hospital:  #ff4d6d;
+      --buffer:    rgba(255, 77, 109, 0.15);
+      --buffer-bdr:rgba(255, 77, 109, 0.5);
+      --point:     #00e5ff;
+      --hull:      rgba(0,229,255,0.12);
+      --hull-bdr:  rgba(0,229,255,0.7);
+      --centroid:  #ffcc00;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Rajdhani', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── HEADER ── */
+    header {
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1000;
+    }
+    .header-title {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 15px;
+      color: var(--accent);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+    .header-sub {
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 1px;
+    }
+    .header-sep { flex: 1; }
+    .badge {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 2px;
+      border: 1px solid;
+      letter-spacing: 1px;
+    }
+    .badge-hospital { color: var(--hospital); border-color: var(--hospital); background: rgba(255,77,109,0.1); }
+    .badge-point    { color: var(--point);    border-color: var(--point);    background: rgba(0,229,255,0.07); }
+    .badge-hull     { color: var(--warn);     border-color: var(--warn);     background: rgba(255,204,0,0.07); }
+
+    /* ── MAIN LAYOUT ── */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── MAP ── */
+    #map {
+      flex: 1;
+      cursor: crosshair;
+    }
+
+    /* ── SIDE PANEL ── */
+    .panel {
+      width: 280px;
+      flex-shrink: 0;
+      background: var(--panel-bg);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-section {
+      border-bottom: 1px solid var(--border);
+      padding: 14px 16px;
+    }
+    .panel-label {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    /* Status row */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-pulse {
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.3; }
+    }
+    .status-text { font-size: 13px; line-height: 1.3; }
+
+    /* Progress bar */
+    .progress-wrap {
+      background: var(--border);
+      border-radius: 2px;
+      height: 4px;
+      margin: 10px 0 6px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.4s ease;
+      border-radius: 2px;
+    }
+    .progress-label {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* Big counter */
+    .counter-block {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin: 4px 0;
+    }
+    .counter-num {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 36px;
+      line-height: 1;
+      color: var(--accent);
+    }
+    .counter-denom {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    /* Log */
+    .log-wrap {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 16px;
+    }
+    .log-wrap::-webkit-scrollbar { width: 4px; }
+    .log-wrap::-webkit-scrollbar-track { background: transparent; }
+    .log-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .log-entry {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      line-height: 1.4;
+      opacity: 0;
+      animation: fadein 0.3s forwards;
+    }
+    @keyframes fadein { to { opacity: 1; } }
+    .log-time {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 10px;
+      color: var(--muted);
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .log-msg { color: var(--text); }
+    .log-ok   .log-msg { color: var(--ok); }
+    .log-warn .log-msg { color: var(--warn); }
+    .log-err  .log-msg { color: var(--hospital); }
+    .log-info .log-msg { color: var(--accent); }
+
+    /* Action buttons */
+    .btn {
+      width: 100%;
+      padding: 9px 14px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 12px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      text-align: left;
+      border-radius: 2px;
+      transition: all 0.15s;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(0,229,255,0.05); }
+    .btn:active { transform: scale(0.98); }
+    .btn.danger:hover { border-color: var(--hospital); color: var(--hospital); background: rgba(255,77,109,0.05); }
+
+    /* Legend */
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 7px;
+      font-size: 12px;
+    }
+    .swatch {
+      width: 24px; height: 10px;
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+
+    /* Overlay loader */
+    #loader {
+      position: absolute;
+      inset: 0;
+      background: rgba(8,13,20,0.88);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      gap: 18px;
+    }
+    .loader-title {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 13px;
+      letter-spacing: 3px;
+      color: var(--accent);
+    }
+    .loader-spinner {
+      width: 40px; height: 40px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loader-msg {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 1px;
+    }
+
+    /* Toast */
+    #toast {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: var(--panel-bg);
+      border: 1px solid var(--warn);
+      color: var(--warn);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 12px;
+      letter-spacing: 1px;
+      padding: 10px 20px;
+      border-radius: 2px;
+      z-index: 8000;
+      transition: transform 0.3s ease;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+
+    /* Coordinate display */
+    #coords {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(13,21,32,0.85);
+      border: 1px solid var(--border);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      padding: 5px 10px;
+      border-radius: 2px;
+      z-index: 500;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div>
+    <div class="header-title">⬡ GIS COMPLAINT MAPPER</div>
+    <div class="header-sub">Malaysia Hospital Exclusion Zones</div>
+  </div>
+  <div class="header-sep"></div>
+  <span class="badge badge-hospital" id="hBadge">HOSPITALS: –</span>
+  <span class="badge badge-point"    id="pBadge">POINTS: 0/5</span>
+  <span class="badge badge-hull"     id="sBadge">HULL: –</span>
+</header>
+
+<!-- MAIN -->
+<div class="main">
+  <div style="position:relative;flex:1;display:flex;flex-direction:column;">
+    <div id="map"></div>
+    <div id="loader">
+      <div class="loader-spinner"></div>
+      <div class="loader-title">INITIALISING</div>
+      <div class="loader-msg" id="loaderMsg">Connecting to Overpass API…</div>
+    </div>
+    <div id="coords">LAT –.–– | LNG –.––</div>
+    <div id="toast">⚠ POINT REJECTED — INSIDE HOSPITAL BUFFER</div>
+  </div>
+
+  <!-- SIDE PANEL -->
+  <div class="panel">
+
+    <!-- Status -->
+    <div class="panel-section">
+      <div class="panel-label">System Status</div>
+      <div class="status-row">
+        <div class="dot dot-pulse" id="statusDot" style="background:var(--muted)"></div>
+        <div class="status-text" id="statusText">Loading hospital data…</div>
+      </div>
+    </div>
+
+    <!-- Points progress -->
+    <div class="panel-section">
+      <div class="panel-label">Complaint Points</div>
+      <div class="counter-block">
+        <span class="counter-num" id="ptCount">0</span>
+        <span class="counter-denom">/ 5 min</span>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar" id="progressBar" style="width:0%"></div>
+      </div>
+      <div class="progress-label" id="progressLabel">Click map to add points (outside buffers)</div>
+    </div>
+
+    <!-- Actions -->
+    <div class="panel-section">
+      <div class="panel-label">Actions</div>
+      <button class="btn danger" onclick="clearPoints()" id="clearBtn">
+        ✕ &nbsp;CLEAR POINTS &amp; HULL
+      </button>
+      <button class="btn" onclick="recalcHull()" id="hullBtn" style="border-color:var(--accent);color:var(--accent);">
+        ◇ &nbsp;RECALCULATE HULL
+      </button>
+    </div>
+
+    <!-- Legend -->
+    <div class="panel-section">
+      <div class="panel-label">Legend</div>
+      <div class="legend-item">
+        <div class="swatch" style="background:var(--hospital);opacity:0.9;"></div>
+        Hospital
+      </div>
+      <div class="legend-item">
+        <div class="swatch" style="background:var(--buffer-bdr);border:1px solid var(--hospital);"></div>
+        1 km Buffer Zone
+      </div>
+      <div class="legend-item">
+        <div class="swatch" style="background:var(--point);border-radius:50%;width:10px;height:10px;"></div>
+        Complaint Point
+      </div>
+      <div class="legend-item">
+        <div class="swatch" style="background:var(--hull-bdr);border:1px dashed var(--accent);"></div>
+        Convex Hull
+      </div>
+      <div class="legend-item">
+        <div class="swatch" style="background:var(--centroid);border-radius:50%;width:10px;height:10px;"></div>
+        Centroid
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="panel-label" style="padding:10px 16px 0;flex-shrink:0;">Event Log</div>
+    <div class="log-wrap" id="logWrap"></div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  MAP INIT
+// ─────────────────────────────────────────────
+const map = L.map('map', {
+  center: [4.2, 109.5],
+  zoom: 6,
+  zoomControl: true,
+  attributionControl: true
+});
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap contributors © CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19
+}).addTo(map);
+
+// ─────────────────────────────────────────────
+//  STATE
+// ─────────────────────────────────────────────
+let hospitalMarkers = L.layerGroup().addTo(map);
+let bufferLayers    = L.layerGroup().addTo(map);
+let pointLayers     = L.layerGroup().addTo(map);
+let hullLayer       = null;
+let centroidLayer   = null;
+
+let bufferFeatures  = [];   // turf feature array for point-in-polygon checks
+let complaintPoints = [];   // [ [lat, lng], ... ]
+
+// ─────────────────────────────────────────────
+//  UTILS
+// ─────────────────────────────────────────────
+function log(msg, type = 'info') {
+  const wrap = document.getElementById('logWrap');
+  const now  = new Date();
+  const ts   = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+  const el   = document.createElement('div');
+  el.className = `log-entry log-${type}`;
+  el.innerHTML = `<span class="log-time">${ts}</span><span class="log-msg">${msg}</span>`;
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+function setStatus(text, color = '#00e5ff', pulse = false) {
+  document.getElementById('statusText').textContent = text;
+  const dot = document.getElementById('statusDot');
+  dot.style.background = color;
+  dot.classList.toggle('dot-pulse', pulse);
+}
+
+function updateBadges() {
+  document.getElementById('pBadge').textContent = `POINTS: ${complaintPoints.length}/5`;
+  document.getElementById('sBadge').textContent = hullLayer ? 'HULL: ACTIVE' : 'HULL: –';
+}
+
+function updateProgress() {
+  const n   = complaintPoints.length;
+  const pct = Math.min(n / 5, 1) * 100;
+  document.getElementById('ptCount').textContent      = n;
+  document.getElementById('progressBar').style.width  = pct + '%';
+
+  if (n === 0) {
+    document.getElementById('progressLabel').textContent = 'Click map to add points (outside buffers)';
+  } else if (n < 5) {
+    document.getElementById('progressLabel').textContent = `Need ${5 - n} more point(s) for hull`;
+  } else {
+    document.getElementById('progressLabel').textContent = `Hull active — add more to refine`;
+  }
+}
+
+// ─────────────────────────────────────────────
+//  HOSPITAL ICONS
+// ─────────────────────────────────────────────
+const hospitalIcon = L.divIcon({
+  className: '',
+  html: `<div style="
+    width:10px;height:10px;
+    background:#ff4d6d;
+    border:2px solid #ff8fa3;
+    border-radius:50%;
+    box-shadow:0 0 6px #ff4d6d;
+  "></div>`,
+  iconSize: [10, 10],
+  iconAnchor: [5, 5]
+});
+
+const pointIcon = (n) => L.divIcon({
+  className: '',
+  html: `<div style="
+    width:12px;height:12px;
+    background:#00e5ff;
+    border:2px solid #fff;
+    border-radius:50%;
+    box-shadow:0 0 8px #00e5ff;
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Share Tech Mono',monospace;font-size:8px;color:#000;
+  ">${n}</div>`,
+  iconSize: [12, 12],
+  iconAnchor: [6, 6]
+});
+
+const centroidIcon = L.divIcon({
+  className: '',
+  html: `<div style="
+    width:16px;height:16px;
+    background:#ffcc00;
+    border:2px solid #fff;
+    border-radius:50%;
+    box-shadow:0 0 12px #ffcc00;
+  "></div>`,
+  iconSize: [16, 16],
+  iconAnchor: [8, 8]
+});
+
+// ─────────────────────────────────────────────
+//  FETCH HOSPITALS (Overpass API)
+// ─────────────────────────────────────────────
+async function fetchHospitals() {
+  const query = `
+    [out:json][timeout:60];
+    area["ISO3166-1"="MY"][admin_level=2]->.my;
+    (
+      node["amenity"="hospital"](area.my);
+      way["amenity"="hospital"](area.my);
+      relation["amenity"="hospital"](area.my);
+    );
+    out center 300;
+  `;
+
+  const url = 'https://overpass-api.de/api/interpreter';
+  const res = await fetch(url, {
+    method: 'POST',
+    body: 'data=' + encodeURIComponent(query)
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// ─────────────────────────────────────────────
+//  BUILD BUFFERS
+// ─────────────────────────────────────────────
+function buildBuffers(elements) {
+  bufferFeatures = [];
+  bufferLayers.clearLayers();
+  hospitalMarkers.clearLayers();
+
+  let count = 0;
+  elements.forEach(el => {
+    let lat, lng;
+    if (el.type === 'node') {
+      lat = el.lat; lng = el.lon;
+    } else if (el.center) {
+      lat = el.center.lat; lng = el.center.lon;
+    } else return;
+
+    // Hospital marker
+    const m = L.marker([lat, lng], { icon: hospitalIcon });
+    const name = (el.tags && el.tags.name) ? el.tags.name : 'Hospital';
+    m.bindTooltip(`<b style="font-family:Rajdhani;font-size:13px;">${name}</b>`, {
+      className: 'dark-tip', direction: 'top'
+    });
+    hospitalMarkers.addLayer(m);
+
+    // Turf point → 1km buffer
+    const pt  = turf.point([lng, lat]);
+    const buf = turf.buffer(pt, 1, { units: 'kilometers', steps: 32 });
+    bufferFeatures.push(buf);
+
+    // Draw buffer polygon
+    L.geoJSON(buf, {
+      style: {
+        color: 'rgba(255,77,109,0.6)',
+        weight: 1,
+        fillColor: 'rgba(255,77,109,0.12)',
+        fillOpacity: 1
+      }
+    }).addTo(bufferLayers);
+
+    count++;
+  });
+
+  return count;
+}
+
+// ─────────────────────────────────────────────
+//  POINT-IN-ANY-BUFFER CHECK
+// ─────────────────────────────────────────────
+function isInBuffer(lat, lng) {
+  const pt = turf.point([lng, lat]);
+  return bufferFeatures.some(buf => turf.booleanPointInPolygon(pt, buf));
+}
+
+// ─────────────────────────────────────────────
+//  DRAW HULL + CENTROID
+// ─────────────────────────────────────────────
+function recalcHull() {
+  if (complaintPoints.length < 5) {
+    log('Need ≥5 points to compute hull', 'warn');
+    return;
+  }
+
+  // Remove old layers
+  if (hullLayer)     { map.removeLayer(hullLayer);     hullLayer     = null; }
+  if (centroidLayer) { map.removeLayer(centroidLayer); centroidLayer = null; }
+
+  const fc    = turf.featureCollection(
+    complaintPoints.map(p => turf.point([p[1], p[0]]))
+  );
+  const hull  = turf.convex(fc);
+
+  if (!hull) {
+    log('Hull computation failed (collinear?)', 'err');
+    return;
+  }
+
+  // Draw hull
+  hullLayer = L.geoJSON(hull, {
+    style: {
+      color: 'rgba(0,229,255,0.8)',
+      weight: 1.5,
+      dashArray: '6 4',
+      fillColor: 'rgba(0,229,255,0.08)',
+      fillOpacity: 1
+    }
+  }).addTo(map);
+
+  // Centroid
+  const ctr = turf.centroid(hull);
+  const [cLng, cLat] = ctr.geometry.coordinates;
+  centroidLayer = L.marker([cLat, cLng], { icon: centroidIcon })
+    .bindTooltip(`<b style="font-family:Rajdhani;">Centroid</b><br/>${cLat.toFixed(5)}, ${cLng.toFixed(5)}`, {
+      permanent: false, direction: 'top'
+    })
+    .addTo(map);
+
+  log(`Hull drawn (${complaintPoints.length} pts) · Centroid: ${cLat.toFixed(4)}, ${cLng.toFixed(4)}`, 'ok');
+  updateBadges();
+}
+
+// ─────────────────────────────────────────────
+//  CLEAR POINTS
+// ─────────────────────────────────────────────
+function clearPoints() {
+  complaintPoints = [];
+  pointLayers.clearLayers();
+  if (hullLayer)     { map.removeLayer(hullLayer);     hullLayer     = null; }
+  if (centroidLayer) { map.removeLayer(centroidLayer); centroidLayer = null; }
+  updateProgress();
+  updateBadges();
+  log('Complaint points cleared', 'warn');
+}
+
+// ─────────────────────────────────────────────
+//  MAP CLICK → ADD POINT
+// ─────────────────────────────────────────────
+map.on('click', function(e) {
+  if (bufferFeatures.length === 0) return;   // not loaded yet
+
+  const { lat, lng } = e.latlng;
+
+  if (isInBuffer(lat, lng)) {
+    showToast('⚠  POINT REJECTED — INSIDE HOSPITAL BUFFER');
+    log(`Rejected (${lat.toFixed(4)}, ${lng.toFixed(4)}) — inside buffer`, 'err');
+    return;
+  }
+
+  complaintPoints.push([lat, lng]);
+  const n = complaintPoints.length;
+
+  const m = L.marker([lat, lng], { icon: pointIcon(n) })
+    .bindTooltip(`<b style="font-family:Rajdhani;">Point #${n}</b><br/>${lat.toFixed(5)}, ${lng.toFixed(5)}`, {
+      direction: 'top'
+    })
+    .addTo(pointLayers);
+
+  log(`Point #${n} added: ${lat.toFixed(4)}, ${lng.toFixed(4)}`, 'ok');
+  updateProgress();
+  updateBadges();
+
+  // Auto-recalc hull when we have ≥5 points
+  if (n >= 5) recalcHull();
+});
+
+// ─────────────────────────────────────────────
+//  MOUSE MOVE → COORD DISPLAY
+// ─────────────────────────────────────────────
+map.on('mousemove', function(e) {
+  const { lat, lng } = e.latlng;
+  document.getElementById('coords').textContent =
+    `LAT ${lat.toFixed(5)} | LNG ${lng.toFixed(5)}`;
+});
+
+// ─────────────────────────────────────────────
+//  INIT
+// ─────────────────────────────────────────────
+(async function init() {
+  setStatus('Fetching hospital data…', '#4a6070', true);
+  log('Querying Overpass API for MY hospitals…', 'info');
+
+  try {
+    document.getElementById('loaderMsg').textContent = 'Querying Overpass API…';
+    const data  = await fetchHospitals();
+    const elems = data.elements || [];
+
+    document.getElementById('loaderMsg').textContent = `Building ${elems.length} buffers…`;
+    log(`Received ${elems.length} hospital records`, 'info');
+
+    // Allow browser to render the loader message
+    await new Promise(r => setTimeout(r, 100));
+
+    const count = buildBuffers(elems);
+    document.getElementById('hBadge').textContent = `HOSPITALS: ${count}`;
+    log(`${count} hospitals loaded · buffers drawn (1 km)`, 'ok');
+    setStatus('Ready — click to plot complaint points', '#39ff14', false);
+    updateProgress();
+    updateBadges();
+  } catch (err) {
+    setStatus('Error loading data', '#ff4d6d', false);
+    log(`Error: ${err.message}`, 'err');
+    document.getElementById('loaderMsg').textContent = '⚠ ' + err.message;
+    setTimeout(() => document.getElementById('loader').style.display = 'none', 3000);
+    return;
+  }
+
+  // Hide loader
+  const loader = document.getElementById('loader');
+  loader.style.transition = 'opacity 0.5s';
+  loader.style.opacity = '0';
+  setTimeout(() => loader.style.display = 'none', 500);
+})();
+</script>
+</body>
+</html>
