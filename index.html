@@ -438,7 +438,7 @@
   <div class="header-logo">
     <div class="header-icon">🗺</div>
     <div>
-      <div class="header-title">GIS Complaint Mapper</div>
+      <div class="header-title">GIS Fraud Simulation</div>
       <div class="header-sub">Malaysia — Hospital Buffer &amp; Spatial Analysis</div>
     </div>
   </div>
@@ -713,17 +713,24 @@ function updateHeatmap() {
   if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
   if (complaintPoints.length < 5 || !centroidLayer) return;
 
-  // Get centroid coordinates
   const cLatLng = centroidLayer.getLatLng();
   const n = complaintPoints.length;
 
-  // Build heatmap centred on centroid — more points = more rings of intensity
+  // Tiny jitter around centroid — avoids leaflet.heat rendering artefact
+  // from stacked identical coordinates
   const heatData = [];
   const rings = Math.min(n, 20);
   for (let i = 0; i < rings; i++) {
-    // Stack multiple points at centroid so density = point count
-    heatData.push([cLatLng.lat, cLatLng.lng, 1.0]);
+    const angle = (i / rings) * 2 * Math.PI;
+    const jitter = 0.00005;
+    heatData.push([
+      cLatLng.lat + Math.sin(angle) * jitter,
+      cLatLng.lng + Math.cos(angle) * jitter,
+      1.0
+    ]);
   }
+  // Always include exact centroid too
+  heatData.push([cLatLng.lat, cLatLng.lng, 1.0]);
 
   const radius = Math.min(120, 30 + n * 5);
 
