@@ -672,6 +672,7 @@ function buildPharmacyBuffers(elements) {
   return count;
 }
 
+async function fetchHospitals() {
   const query = `[out:json][timeout:60];area["ISO3166-1"="MY"][admin_level=2]->.my;(node["amenity"="hospital"](area.my);way["amenity"="hospital"](area.my);relation["amenity"="hospital"](area.my););out center 300;`;
   const res = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST', body: 'data=' + encodeURIComponent(query)
