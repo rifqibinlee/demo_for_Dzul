@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
@@ -494,6 +495,10 @@
           <div class="stat-value" id="hospCount">—</div>
           <div class="stat-label">Hospitals</div>
         </div>
+        <div class="stat-card" style="grid-column:1/-1;">
+          <div class="stat-value" id="pharmCount" style="font-size:20px;">—</div>
+          <div class="stat-label">Pharmacies (300 m buffer)</div>
+        </div>
       </div>
       <div class="progress-wrap">
         <div class="progress-bar" id="progressBar" style="width:0%"></div>
@@ -529,6 +534,18 @@
         <div class="swatch" style="background:#b45309;border-radius:50%;width:12px;height:12px;"></div>
         Centroid
       </div>
+      <div class="legend-item">
+        <div class="swatch" style="background:#7c3aed;border-radius:50%;width:12px;height:12px;"></div>
+        Pharmacy
+      </div>
+      <div class="legend-item">
+        <div class="swatch" style="background:rgba(124,58,237,0.12);border:1.5px solid rgba(124,58,237,0.5);"></div>
+        300 m Pharmacy Buffer
+      </div>
+      <div class="legend-item">
+        <div class="swatch" style="background:linear-gradient(90deg,#00f,#0f0,#ff0,#f00);border-radius:2px;height:12px;"></div>
+        Complaint Heatmap
+      </div>
     </div>
 
     <div class="log-label">Event Log</div>
@@ -546,10 +563,14 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
 
 let hospitalMarkers = L.layerGroup().addTo(map);
 let bufferLayers    = L.layerGroup().addTo(map);
+let pharmacyMarkers = L.layerGroup().addTo(map);
+let pharmacyBufferLayers = L.layerGroup().addTo(map);
 let pointLayers     = L.layerGroup().addTo(map);
 let hullLayer       = null;
 let centroidLayer   = null;
+let heatLayer       = null;
 let bufferFeatures  = [];
+let pharmacyBufferFeatures = [];
 let complaintPoints = [];
 
 function log(msg, type = 'info') {
@@ -614,7 +635,43 @@ const centroidIcon = L.divIcon({
   iconSize: [18,18], iconAnchor: [9,9]
 });
 
-async function fetchHospitals() {
+const pharmacyIcon = L.divIcon({
+  className: '',
+  html: `<div style="width:10px;height:10px;background:#7c3aed;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 4px rgba(124,58,237,0.55);"></div>`,
+  iconSize: [10,10], iconAnchor: [5,5]
+});
+
+async function fetchPharmacies() {
+  const query = `[out:json][timeout:60];area["ISO3166-1"="MY"][admin_level=2]->.my;(node["amenity"="pharmacy"](area.my);way["amenity"="pharmacy"](area.my););out center 500;`;
+  const res = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST', body: 'data=' + encodeURIComponent(query)
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function buildPharmacyBuffers(elements) {
+  pharmacyBufferFeatures = []; pharmacyBufferLayers.clearLayers(); pharmacyMarkers.clearLayers();
+  let count = 0;
+  elements.forEach(el => {
+    let lat, lng;
+    if (el.type === 'node') { lat = el.lat; lng = el.lon; }
+    else if (el.center)     { lat = el.center.lat; lng = el.center.lon; }
+    else return;
+
+    const name = (el.tags && el.tags.name) ? el.tags.name : 'Pharmacy';
+    L.marker([lat,lng], { icon: pharmacyIcon })
+      .bindTooltip(`<b>${name}</b>`, { direction: 'top' })
+      .addTo(pharmacyMarkers);
+
+    const buf = turf.buffer(turf.point([lng, lat]), 0.3, { units: 'kilometers', steps: 32 });
+    pharmacyBufferFeatures.push(buf);
+    L.geoJSON(buf, { style: { color: 'rgba(124,58,237,0.5)', weight: 1, fillColor: 'rgba(124,58,237,0.09)', fillOpacity: 1 } }).addTo(pharmacyBufferLayers);
+    count++;
+  });
+  return count;
+}
+
   const query = `[out:json][timeout:60];area["ISO3166-1"="MY"][admin_level=2]->.my;(node["amenity"="hospital"](area.my);way["amenity"="hospital"](area.my);relation["amenity"="hospital"](area.my););out center 300;`;
   const res = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST', body: 'data=' + encodeURIComponent(query)
@@ -647,7 +704,23 @@ function buildBuffers(elements) {
 
 function isInBuffer(lat, lng) {
   const pt = turf.point([lng, lat]);
-  return bufferFeatures.some(buf => turf.booleanPointInPolygon(pt, buf));
+  return bufferFeatures.some(buf => turf.booleanPointInPolygon(pt, buf))
+      || pharmacyBufferFeatures.some(buf => turf.booleanPointInPolygon(pt, buf));
+}
+
+function updateHeatmap() {
+  if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+  if (complaintPoints.length === 0) return;
+  // Build heatmap data: each point contributes intensity proportional to total point count
+  const intensity = Math.min(1, 0.3 + complaintPoints.length * 0.07);
+  const radius    = Math.min(60, 20 + complaintPoints.length * 4);
+  const heatData  = complaintPoints.map(p => [p[0], p[1], intensity]);
+  heatLayer = L.heatLayer(heatData, {
+    radius,
+    blur: Math.round(radius * 0.8),
+    maxZoom: 17,
+    gradient: { 0.2: '#313695', 0.4: '#4575b4', 0.55: '#74add1', 0.65: '#fee090', 0.8: '#f46d43', 1.0: '#d73027' }
+  }).addTo(map);
 }
 
 function recalcHull() {
@@ -669,6 +742,7 @@ function recalcHull() {
     .bindTooltip(`<b>Centroid</b><br/>${cLat.toFixed(5)}, ${cLng.toFixed(5)}`, { direction: 'top' })
     .addTo(map);
 
+  updateHeatmap();
   log(`Convex hull generated (${complaintPoints.length} pts). Centroid: ${cLat.toFixed(4)}, ${cLng.toFixed(4)}`, 'ok');
   updateBadges();
 }
@@ -677,16 +751,21 @@ function clearPoints() {
   complaintPoints = []; pointLayers.clearLayers();
   if (hullLayer)     { map.removeLayer(hullLayer);     hullLayer     = null; }
   if (centroidLayer) { map.removeLayer(centroidLayer); centroidLayer = null; }
+  if (heatLayer)     { map.removeLayer(heatLayer);     heatLayer     = null; }
   updateProgress(); updateBadges();
   log('All complaint points and hull cleared.', 'warn');
 }
 
 map.on('click', function(e) {
-  if (bufferFeatures.length === 0) return;
+  if (bufferFeatures.length === 0 && pharmacyBufferFeatures.length === 0) return;
   const { lat, lng } = e.latlng;
-  if (isInBuffer(lat, lng)) {
-    showToast('⚠  Point rejected — location is within a hospital buffer zone');
-    log(`Point at (${lat.toFixed(4)}, ${lng.toFixed(4)}) rejected — inside buffer zone.`, 'err');
+  const pt = turf.point([lng, lat]);
+  const inHospital = bufferFeatures.some(buf => turf.booleanPointInPolygon(pt, buf));
+  const inPharmacy = pharmacyBufferFeatures.some(buf => turf.booleanPointInPolygon(pt, buf));
+  if (inHospital || inPharmacy) {
+    const zone = inHospital ? 'hospital buffer zone' : 'pharmacy buffer zone';
+    showToast(`⚠  Point rejected — location is within a ${zone}`);
+    log(`Point at (${lat.toFixed(4)}, ${lng.toFixed(4)}) rejected — inside ${zone}.`, 'err');
     return;
   }
   complaintPoints.push([lat, lng]);
@@ -711,13 +790,26 @@ map.on('mousemove', function(e) {
     document.getElementById('loaderMsg').textContent = 'Querying Overpass API for Malaysia hospitals…';
     const data  = await fetchHospitals();
     const elems = data.elements || [];
-    document.getElementById('loaderMsg').textContent = `Processing ${elems.length} records and drawing buffers…`;
+    document.getElementById('loaderMsg').textContent = `Processing ${elems.length} hospital records and drawing buffers…`;
     log(`${elems.length} hospital records retrieved.`, 'info');
     await new Promise(r => setTimeout(r, 100));
     const count = buildBuffers(elems);
     document.getElementById('hBadge').textContent   = `Hospitals: ${count}`;
     document.getElementById('hospCount').textContent = count;
     log(`${count} hospitals loaded. 1 km buffer zones rendered.`, 'ok');
+
+    document.getElementById('loaderMsg').textContent = 'Querying Overpass API for Malaysia pharmacies…';
+    setStatus('Fetching pharmacy records…', '#94a3b8', true);
+    log('Querying Overpass API for pharmacies in Malaysia…', 'info');
+    const pharmData  = await fetchPharmacies();
+    const pharmElems = pharmData.elements || [];
+    document.getElementById('loaderMsg').textContent = `Processing ${pharmElems.length} pharmacy records and drawing buffers…`;
+    log(`${pharmElems.length} pharmacy records retrieved.`, 'info');
+    await new Promise(r => setTimeout(r, 100));
+    const pharmCount = buildPharmacyBuffers(pharmElems);
+    document.getElementById('pharmCount').textContent = pharmCount;
+    log(`${pharmCount} pharmacies loaded. 300 m buffer zones rendered.`, 'ok');
+
     setStatus('Ready — click on the map to record complaint points', '#1a7a4a', false);
     updateProgress(); updateBadges();
   } catch (err) {
